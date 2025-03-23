@@ -1,5 +1,6 @@
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
+
 
 @dataclass
 class EnvConfig:
@@ -16,6 +17,8 @@ class EnvConfig:
 
 
 class Granularity(Enum):
+    """Granularity for frequency of data received from AWS cost explorer."""
+
     HOURLY: str = "HOURLY"
     DAILY: str = "DAILY"
     MONTHLY: str = "MONTHLY"

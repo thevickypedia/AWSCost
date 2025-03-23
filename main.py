@@ -15,11 +15,16 @@ def env_config() -> EnvConfig:
     dotenv.load_dotenv(dotenv_path=env_file)
     env_vars = {key.upper(): value for key, value in os.environ.items()}
     return EnvConfig(
-        aws_access_key_id=env_vars.get("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=env_vars.get("AWS_SECRET_ACCESS_KEY"),
         region_name=env_vars.get("REGION_NAME"),
         profile_name=env_vars.get("PROFILE_NAME"),
+        aws_access_key_id=env_vars.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=env_vars.get("AWS_SECRET_ACCESS_KEY"),
     )
+
+
+def date(date_cls: datetime) -> str:
+    """Converts a datetime object to a string indicating the date part."""
+    return date_cls.strftime("%A %b %d, %Y")
 
 
 def size_converter(byte_size) -> str:
@@ -59,6 +64,7 @@ class AWSClient:
     ) -> None:
         """Uses cost explorer to get monthly cost."""
         dt_format = "%Y-%m-%d"
+        now = datetime.now()
 
         if start_date:
             start_date = datetime.strptime(start_date, dt_format)
@@ -68,9 +74,9 @@ class AWSClient:
         if end_date:
             end_date = datetime.strptime(end_date, dt_format)
         else:
-            end_date = datetime.now()
+            end_date = now
 
-        assert start_date <= datetime.now(), "start_date cannot be in the future"
+        assert start_date <= now, "start_date cannot be in the future"
         assert end_date > start_date, "end_date cannot be greater than start date"
 
         start_date_str = start_date.strftime(dt_format)
@@ -83,10 +89,12 @@ class AWSClient:
                 Granularity=granularity.value,
                 Metrics=["UnblendedCost"],
             )
-            total_cost = response["ResultsByTime"][0]["Total"]["UnblendedCost"][
-                "Amount"
-            ]
-            print(f"Total cost from {start_date_str} to {end_date_str}: ${total_cost}")
+            total_cost = 0
+            for result in response["ResultsByTime"]:
+                total_cost += float(result["Total"]["UnblendedCost"]["Amount"])
+            print(
+                f"Total cost from {date(start_date)!r} to {date(end_date)!r}: ${round(total_cost, 2)}"
+            )
         else:
             response = self.ce_client.get_cost_and_usage(
                 TimePeriod={"Start": start_date_str, "End": end_date_str},
@@ -94,12 +102,27 @@ class AWSClient:
                 Metrics=["UnblendedCost"],
                 GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
             )
+            cost_breakdown = {}
             for result in response["ResultsByTime"]:
-                print(f"Time Period: {result['TimePeriod']}")
                 for group in result["Groups"]:
                     service = group["Keys"][0]
-                    cost = group["Metrics"]["UnblendedCost"]["Amount"]
-                    print(f"Service: {service}, Cost: {cost}")
+                    cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
+                    if not cost:
+                        continue
+                    if cost_breakdown.get(service):
+                        cost_breakdown[service] += cost
+                    else:
+                        cost_breakdown[service] = cost
+            print(f"Cost breakdown from {date(start_date)!r} to {date(end_date)!r}")
+            for key, value in cost_breakdown.items():
+                rounded = round(value, 4)
+                if rounded == 0.0000:
+                    cost = f"{rounded:.4f} ({value})"
+                elif rounded.is_integer():
+                    cost = int(rounded)
+                else:
+                    cost = f"{rounded:.4f}"
+                print(f"Service: {key}\nCost: {cost}\n")
 
     def s3_usage(self):
         """Gather all the buckets and their usage."""
@@ -130,4 +153,4 @@ class AWSClient:
 
 if __name__ == "__main__":
     aws_client = AWSClient()
-    aws_client.cost_explorer(start_date="2025-01-01", total=True)
+    aws_client.cost_explorer(start_date="2025-01-01")
