@@ -1,55 +1,38 @@
 import json
 import math
+import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import boto3
+import dotenv
 
 
-def cost_explorer() -> None:
-    """Uses cost explorer to get monthly cost."""
-    # Cost Explorer is a global service
-    client = boto3.client("ce", region_name="us-east-1")
+@dataclass
+class EnvConfig:
+    """Dataclass for environment variables.
 
-    end_date = datetime.now()
-    # Get cost data for the past 30 days
-    start_date = end_date - timedelta(days=30)
+    >>> EnvConfig
 
-    start_date_str = start_date.strftime("%Y-%m-%d")
-    end_date_str = end_date.strftime("%Y-%m-%d")
+    """
 
-    response = client.get_cost_and_usage(
-        TimePeriod={"Start": start_date_str, "End": end_date_str},
-        Granularity="MONTHLY",  # choose DAILY or HOURLY
-        Metrics=[
-            "UnblendedCost"
-        ],  # Unblended cost is the cost of AWS resources before any applied discounts
-        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    region_name: str
+    profile_name: str
+
+
+def env_config() -> EnvConfig:
+    """Function to load all the env vars."""
+    env_file = os.getenv("env_file") or os.getenv("ENV_FILE") or ".env"
+    dotenv.load_dotenv(dotenv_path=env_file)
+    env_vars = {key.upper(): value for key, value in os.environ.items()}
+    return EnvConfig(
+        aws_access_key_id=env_vars.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=env_vars.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=env_vars.get("REGION_NAME"),
+        profile_name=env_vars.get("PROFILE_NAME"),
     )
-    for result in response["ResultsByTime"]:
-        print(f"Time Period: {result['TimePeriod']}")
-        for group in result["Groups"]:
-            service = group["Keys"][0]
-            cost = group["Metrics"]["UnblendedCost"]["Amount"]
-            print(f"Service: {service}, Cost: {cost}")
-
-
-def cost_per_gigabyte(byte_size) -> float:
-    """Get cost per GB."""
-    if byte_size <= 50_000_000_000_000:
-        return 0.023
-    if byte_size <= 450_000_000_000_000:
-        return 0.022
-    if byte_size >= 500_000_000_000_000:
-        return 0.021
-    raise ValueError("Refer https://aws.amazon.com/s3/pricing/ to add pricing options")
-
-
-def cost_converter(total_size: int) -> float:
-    """Round off cost value for the total size."""
-    cost_per_gb = cost_per_gigabyte(total_size)
-    cost_per_byte = cost_per_gb / (1024**3)
-    total_cost = total_size * cost_per_byte
-    return round(total_cost, 6)
 
 
 def size_converter(byte_size) -> str:
@@ -61,18 +44,50 @@ def size_converter(byte_size) -> str:
     return f"{round(byte_size / pow(1024, index), 2)} {size_name[index]}"
 
 
-class AWSS3Cost:
-    """AWS S3 cost calculator.
+class AWSClient:
+    """AWS client.
 
-    >>> AWSS3Cost
+    >>> AWSClient
 
     """
 
     def __init__(self):
-        self.s3_client = boto3.client("s3")
+        config: EnvConfig = env_config()
+        session = boto3.Session(
+            region_name=config.region_name,
+            profile_name=config.profile_name,
+            aws_access_key_id=config.aws_access_key_id,
+            aws_secret_access_key=config.aws_secret_access_key,
+        )
+        self.s3_client = session.client("s3")
+        # Cost Explorer is a global service
+        self.ce_client = session.client("ce", region_name="us-east-1")
 
-    def calculate(self):
-        """Gather all the buckets and estimate the cost."""
+    def cost_explorer(self) -> None:
+        """Uses cost explorer to get monthly cost."""
+        end_date = datetime.now()
+        # Get cost data for the past 30 days
+        start_date = end_date - timedelta(days=30)
+
+        start_date_str = start_date.strftime("%Y-%m-%d")
+        end_date_str = end_date.strftime("%Y-%m-%d")
+
+        # Unblended cost is the cost of AWS resources before any applied discounts
+        response = self.ce_client.get_cost_and_usage(
+            TimePeriod={"Start": start_date_str, "End": end_date_str},
+            Granularity="MONTHLY",  # choose DAILY or HOURLY
+            Metrics=["UnblendedCost"],
+            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+        )
+        for result in response["ResultsByTime"]:
+            print(f"Time Period: {result['TimePeriod']}")
+            for group in result["Groups"]:
+                service = group["Keys"][0]
+                cost = group["Metrics"]["UnblendedCost"]["Amount"]
+                print(f"Service: {service}, Cost: {cost}")
+
+    def s3_usage(self):
+        """Gather all the buckets and their usage."""
         total_size = 0
         response = self.s3_client.list_buckets()
         bucket_values = {}
@@ -96,12 +111,8 @@ class AWSS3Cost:
         human_readable_total_size = size_converter(total_size)
         print("\n")
         print(f"Total size of all buckets: {human_readable_total_size!r}")
-        print(
-            f"Approximate monthly cost for {human_readable_total_size!r}: ${cost_converter(total_size)!r}"
-        )
 
 
 if __name__ == "__main__":
-    # aws_s3_cost = AWSS3Cost()
-    # aws_s3_cost.calculate()
-    cost_explorer()
+    aws_client = AWSClient()
+    aws_client.cost_explorer()
