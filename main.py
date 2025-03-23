@@ -1,25 +1,12 @@
 import json
 import math
 import os
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import boto3
 import dotenv
 
-
-@dataclass
-class EnvConfig:
-    """Dataclass for environment variables.
-
-    >>> EnvConfig
-
-    """
-
-    aws_access_key_id: str
-    aws_secret_access_key: str
-    region_name: str
-    profile_name: str
+from config import EnvConfig, Granularity
 
 
 def env_config() -> EnvConfig:
@@ -63,28 +50,56 @@ class AWSClient:
         # Cost Explorer is a global service
         self.ce_client = session.client("ce", region_name="us-east-1")
 
-    def cost_explorer(self) -> None:
+    def cost_explorer(
+        self,
+        start_date: str = None,
+        end_date: str = None,
+        total: bool = False,
+        granularity: Granularity = Granularity.MONTHLY,
+    ) -> None:
         """Uses cost explorer to get monthly cost."""
-        end_date = datetime.now()
-        # Get cost data for the past 30 days
-        start_date = end_date - timedelta(days=30)
+        dt_format = "%Y-%m-%d"
 
-        start_date_str = start_date.strftime("%Y-%m-%d")
-        end_date_str = end_date.strftime("%Y-%m-%d")
+        if start_date:
+            start_date = datetime.strptime(start_date, dt_format)
+        else:
+            start_date = end_date - timedelta(days=30)
+
+        if end_date:
+            end_date = datetime.strptime(end_date, dt_format)
+        else:
+            end_date = datetime.now()
+
+        assert start_date <= datetime.now(), "start_date cannot be in the future"
+        assert end_date > start_date, "end_date cannot be greater than start date"
+
+        start_date_str = start_date.strftime(dt_format)
+        end_date_str = end_date.strftime(dt_format)
 
         # Unblended cost is the cost of AWS resources before any applied discounts
-        response = self.ce_client.get_cost_and_usage(
-            TimePeriod={"Start": start_date_str, "End": end_date_str},
-            Granularity="MONTHLY",  # choose DAILY or HOURLY
-            Metrics=["UnblendedCost"],
-            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-        )
-        for result in response["ResultsByTime"]:
-            print(f"Time Period: {result['TimePeriod']}")
-            for group in result["Groups"]:
-                service = group["Keys"][0]
-                cost = group["Metrics"]["UnblendedCost"]["Amount"]
-                print(f"Service: {service}, Cost: {cost}")
+        if total:
+            response = self.ce_client.get_cost_and_usage(
+                TimePeriod={"Start": start_date_str, "End": end_date_str},
+                Granularity=granularity.value,
+                Metrics=["UnblendedCost"],
+            )
+            total_cost = response["ResultsByTime"][0]["Total"]["UnblendedCost"][
+                "Amount"
+            ]
+            print(f"Total cost from {start_date_str} to {end_date_str}: ${total_cost}")
+        else:
+            response = self.ce_client.get_cost_and_usage(
+                TimePeriod={"Start": start_date_str, "End": end_date_str},
+                Granularity=granularity.value,
+                Metrics=["UnblendedCost"],
+                GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+            )
+            for result in response["ResultsByTime"]:
+                print(f"Time Period: {result['TimePeriod']}")
+                for group in result["Groups"]:
+                    service = group["Keys"][0]
+                    cost = group["Metrics"]["UnblendedCost"]["Amount"]
+                    print(f"Service: {service}, Cost: {cost}")
 
     def s3_usage(self):
         """Gather all the buckets and their usage."""
@@ -115,4 +130,4 @@ class AWSClient:
 
 if __name__ == "__main__":
     aws_client = AWSClient()
-    aws_client.cost_explorer()
+    aws_client.cost_explorer(start_date="2025-01-01", total=True)
